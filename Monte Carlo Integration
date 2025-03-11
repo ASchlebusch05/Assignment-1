@@ -1,0 +1,207 @@
+# app.R
+library(shiny)
+library(ggplot2)
+library(scales)
+
+# Define UI
+ui <- fluidPage(
+  titlePanel("Monte Carlo Double Integral Calculator"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      # Function input as text (with a default)
+      textAreaInput("functionText", "Function to integrate f(x,y):", 
+                    value = "log(1/(exp(x)+exp(y)))",
+                    height = "100px"),
+      
+      # Integration limits
+      h4("Integration Limits:"),
+      numericInput("x_min", "x min:", 0),
+      numericInput("x_max", "x max:", 1),
+      numericInput("y_min", "y min:", 0),
+      numericInput("y_max", "y max:", 1),
+      
+      # Known exact value (optional)
+      numericInput("exactValue", "Exact value (if known):", -1.21365),
+      
+      # Sample sizes
+      checkboxGroupInput("sampleSizes", "Sample sizes to try:",
+                         choices = c("1,000" = 1000, 
+                                     "10,000" = 10000, 
+                                     "100,000" = 100000,
+                                     "1,000,000" = 1000000),
+                         selected = c(1000, 10000, 100000)),
+      
+      # Button to run the integration
+      actionButton("calculateButton", "Calculate Integral", 
+                   class = "btn-primary btn-lg")
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Results", 
+                 tableOutput("resultsTable"),
+                 verbatimTextOutput("errorText")),
+        tabPanel("Convergence Plot",
+                 plotOutput("convergencePlot")),
+        tabPanel("About",
+                 h3("Monte Carlo Integration for Double Integrals"),
+                 p("This app estimates double integrals using the Monte Carlo method."),
+                 p("The Monte Carlo method works by:"),
+                 tags$ol(
+                   tags$li("Generating random points within the region of integration"),
+                   tags$li("Evaluating the function at these points"),
+                   tags$li("Taking the average value and multiplying by the area")
+                 ),
+                 p("The larger the number of sample points, the more accurate the estimate will be."),
+                 h4("Tips:"),
+                 tags$ul(
+                   tags$li("Use standard R syntax for your function"),
+                   tags$li("The function should take two parameters: x and y"),
+                   tags$li("Common functions like exp(), log(), sin(), cos() are available"),
+                   tags$li("Larger sample sizes will give more accurate results but take longer to compute")
+                 )
+        )
+      )
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  
+  # Function to perform Monte Carlo integration for double integrals
+  monte_carlo_double_integral <- function(f, x_limits, y_limits, n_samples = 10000) {
+    # Extract the limits
+    x_min <- x_limits[1]
+    x_max <- x_limits[2]
+    y_min <- y_limits[1]
+    y_max <- y_limits[2]
+    
+    # Calculate the area of the region
+    area <- (x_max - x_min) * (y_max - y_min)
+    
+    # Generate random points within the region
+    x_samples <- runif(n_samples, min = x_min, max = x_max)
+    y_samples <- runif(n_samples, min = y_min, max = y_max)
+    
+    # Evaluate the function at these points
+    function_values <- mapply(f, x_samples, y_samples)
+    
+    # Calculate the mean of the function values
+    mean_value <- mean(function_values)
+    
+    # Estimate the integral
+    integral_estimate <- area * mean_value
+    
+    # Calculate standard error
+    standard_error <- area * sd(function_values) / sqrt(n_samples)
+    
+    # Return both the estimate and the standard error
+    return(list(
+      estimate = integral_estimate,
+      standard_error = standard_error,
+      relative_error = standard_error / abs(integral_estimate)
+    ))
+  }
+  
+  # Create a reactive value to store the results
+  results_data <- reactiveVal(NULL)
+  error_message <- reactiveVal("")
+  
+  # When the calculate button is clicked, perform the integration
+  observeEvent(input$calculateButton, {
+    # Reset any previous error message
+    error_message("")
+    
+    # Get the function from text input
+    tryCatch({
+      func_text <- input$functionText
+      f <- eval(parse(text = paste0("function(x, y) { return(", func_text, ") }")))
+      
+      # Get the limits
+      x_limits <- c(input$x_min, input$x_max)
+      y_limits <- c(input$y_min, input$y_max)
+      
+      # Get selected sample sizes
+      sample_sizes <- as.numeric(input$sampleSizes)
+      
+      # Create results data frame
+      results <- data.frame(
+        n_samples = sample_sizes,
+        estimate = numeric(length(sample_sizes)),
+        standard_error = numeric(length(sample_sizes)),
+        relative_error = numeric(length(sample_sizes))
+      )
+      
+      # Set seed for reproducibility
+      set.seed(123)
+      
+      # Perform the integration for each sample size
+      for (i in 1:nrow(results)) {
+        result <- monte_carlo_double_integral(f, x_limits, y_limits, results$n_samples[i])
+        results$estimate[i] <- result$estimate
+        results$standard_error[i] <- result$standard_error
+        results$relative_error[i] <- result$relative_error
+      }
+      
+      # Store the results in the reactive value
+      results_data(results)
+    }, error = function(e) {
+      error_message(paste("Error:", e$message))
+    })
+  })
+  
+  # Display the results table
+  output$resultsTable <- renderTable({
+    req(results_data())
+    results <- results_data()
+    
+    # Add absolute error column if exact value is provided
+    if (!is.na(input$exactValue)) {
+      results$absolute_error <- abs(input$exactValue - results$estimate)
+    }
+    
+    # Format the table
+    results$n_samples <- format(results$n_samples, big.mark = ",")
+    results
+  }, digits = 6)
+  
+  # Display any error message
+  output$errorText <- renderText({
+    error_message()
+  })
+  
+  # Create the convergence plot
+  output$convergencePlot <- renderPlot({
+    req(results_data())
+    results <- results_data()
+    
+    p <- ggplot(results, aes(x = n_samples, y = estimate)) +
+      geom_point(size = 3) +
+      geom_errorbar(aes(ymin = estimate - standard_error, 
+                        ymax = estimate + standard_error), 
+                    width = 0.1) +
+      scale_x_log10(labels = comma) +
+      labs(
+        title = "Monte Carlo Integration Convergence",
+        x = "Number of Samples (log scale)",
+        y = "Integral Estimate"
+      ) +
+      theme_minimal(base_size = 14)
+    
+    # Add reference line for exact value if provided
+    if (!is.na(input$exactValue)) {
+      p <- p + geom_hline(yintercept = input$exactValue, 
+                          linetype = "dashed", 
+                          color = "red",
+                          size = 1)
+    }
+    
+    p
+  })
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
+
