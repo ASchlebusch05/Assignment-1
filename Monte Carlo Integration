@@ -134,8 +134,6 @@ server <- function(input, output, session) {
         relative_error = numeric(length(sample_sizes))
       )
       
-      # Set seed for reproducibility
-      set.seed(123)
       
       # Perform the integration for each sample size
       for (i in 1:nrow(results)) {
